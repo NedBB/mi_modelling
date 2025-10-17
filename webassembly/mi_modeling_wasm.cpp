@@ -17,10 +17,36 @@ using namespace emscripten;
 class WASMFitzHughNagumo {
 private:
     std::unique_ptr<FitzHughNagumo> model;
+    std::vector<std::pair<int, double>> epochResults; // epoch, accuracy
+    std::vector<double> trainingLoss;
+    std::vector<double> validationLoss;
+    int currentEpoch;
+    bool trainingMode;
+    
+    // Classification metrics
+    struct ClassificationMetrics {
+        double accuracy;
+        double precision;
+        double recall;
+        double f1Score;
+        double specificity;
+        double sensitivity;
+        int truePositives;
+        int falsePositives;
+        int trueNegatives;
+        int falseNegatives;
+    };
+    
+    std::vector<ClassificationMetrics> classificationHistory;
     
 public:
     WASMFitzHughNagumo(int width, int height, double dt = 0.01) {
         model = std::make_unique<FitzHughNagumo>(width, height, dt);
+        currentEpoch = 0;
+        trainingMode = false;
+        epochResults.clear();
+        trainingLoss.clear();
+        validationLoss.clear();
     }
     
     void initialize() {
@@ -43,12 +69,238 @@ public:
         model->run(steps);
     }
     
+    void run(int steps, bool enableTraining = false) {
+        if (enableTraining) {
+            trainingMode = true;
+            runTrainingEpoch(steps);
+        } else {
+            model->run(steps);
+        }
+    }
+    
+    void runTrainingEpoch(int steps) {
+        if (!trainingMode) return;
+        
+        // Run simulation for this epoch
+        model->run(steps);
+        
+        // Calculate accuracy for this epoch
+        double accuracy = calculateEpochAccuracy();
+        
+        // Calculate classification metrics
+        ClassificationMetrics metrics = calculateClassificationMetrics();
+        
+        // Store epoch results
+        epochResults.push_back(std::make_pair(currentEpoch, accuracy));
+        
+        // Store classification metrics
+        classificationHistory.push_back(metrics);
+        
+        // Calculate training and validation loss
+        double trainLoss = calculateTrainingLoss();
+        double valLoss = calculateValidationLoss();
+        
+        trainingLoss.push_back(trainLoss);
+        validationLoss.push_back(valLoss);
+        
+        currentEpoch++;
+    }
+    
     void step() {
         model->step();
     }
     
     double getTime() const {
         return model->getTime();
+    }
+    
+    // Calculate accuracy for current epoch based on physiological criteria
+    double calculateEpochAccuracy() const {
+        const auto& membraneData = model->getU();
+        const auto& recoveryData = model->getV();
+        
+        double totalAccuracy = 0.0;
+        int validCells = 0;
+        
+        for (size_t y = 0; y < membraneData.size(); y++) {
+            for (size_t x = 0; x < membraneData[y].size(); x++) {
+                double membrane = membraneData[y][x];
+                double recovery = recoveryData[y][x];
+                
+                // Physiological accuracy criteria
+                double accuracy = 1.0;
+                
+                // Check membrane potential range (-100mV to +50mV is physiologically reasonable)
+                if (membrane < -100.0 || membrane > 50.0) {
+                    accuracy *= 0.5; // Penalize unrealistic values
+                }
+                
+                // Check recovery variable range (0.0 to 1.0 is typical)
+                if (recovery < 0.0 || recovery > 1.0) {
+                    accuracy *= 0.7;
+                }
+                
+                // Check for stable oscillations (variance-based)
+                if (y > 0 && y < membraneData.size() - 1 && 
+                    x > 0 && x < membraneData[y].size() - 1) {
+                    double localVariance = 0.0;
+                    double mean = 0.0;
+                    int count = 0;
+                    
+                    // Calculate local variance
+                    for (int dy = -1; dy <= 1; dy++) {
+                        for (int dx = -1; dx <= 1; dx++) {
+                            mean += membraneData[y + dy][x + dx];
+                            count++;
+                        }
+                    }
+                    mean /= count;
+                    
+                    for (int dy = -1; dy <= 1; dy++) {
+                        for (int dx = -1; dx <= 1; dx++) {
+                            double diff = membraneData[y + dy][x + dx] - mean;
+                            localVariance += diff * diff;
+                        }
+                    }
+                    localVariance /= count;
+                    
+                    // Reward moderate variance (indicating healthy electrical activity)
+                    if (localVariance > 0.01 && localVariance < 1.0) {
+                        accuracy *= 1.1; // Bonus for good variance
+                    } else if (localVariance > 2.0) {
+                        accuracy *= 0.8; // Penalize excessive variance
+                    }
+                }
+                
+                totalAccuracy += accuracy;
+                validCells++;
+            }
+        }
+        
+        return validCells > 0 ? (totalAccuracy / validCells) * 100.0 : 0.0;
+    }
+    
+    double calculateTrainingLoss() const {
+        // Calculate mean squared error between current state and target
+        const auto& membraneData = model->getU();
+        double loss = 0.0;
+        int count = 0;
+        
+        // Target: stable resting potential around -80mV
+        double targetPotential = -80.0;
+        
+        for (const auto& row : membraneData) {
+            for (double value : row) {
+                double error = value - targetPotential;
+                loss += error * error;
+                count++;
+            }
+        }
+        
+        return count > 0 ? loss / count : 0.0;
+    }
+    
+    double calculateValidationLoss() const {
+        // Calculate validation loss based on physiological constraints
+        const auto& membraneData = model->getU();
+        double loss = 0.0;
+        int count = 0;
+        
+        for (const auto& row : membraneData) {
+            for (double value : row) {
+                // Penalize values outside physiological range
+                if (value < -100.0 || value > 50.0) {
+                    loss += 1.0; // High penalty
+                } else if (value < -90.0 || value > 40.0) {
+                    loss += 0.1; // Moderate penalty
+                }
+                count++;
+            }
+        }
+        
+        return count > 0 ? loss / count : 0.0;
+    }
+    
+    // Generate ground truth data for MI classification
+    std::vector<std::vector<bool>> generateGroundTruth() const {
+        const auto& membraneData = model->getU();
+        std::vector<std::vector<bool>> groundTruth;
+        
+        groundTruth.resize(membraneData.size());
+        for (size_t y = 0; y < membraneData.size(); y++) {
+            groundTruth[y].resize(membraneData[y].size());
+            for (size_t x = 0; x < membraneData[y].size(); x++) {
+                // Simulate MI regions (central area with reduced potential)
+                double center_x = membraneData[y].size() / 2.0;
+                double center_y = membraneData.size() / 2.0;
+                double distance = std::sqrt((x - center_x) * (x - center_x) + (y - center_y) * (y - center_y));
+                
+                // MI region: distance < 20% of grid size
+                bool isMI = distance < std::min(membraneData[y].size(), membraneData.size()) * 0.2;
+                groundTruth[y][x] = isMI;
+            }
+        }
+        
+        return groundTruth;
+    }
+    
+    // Classify tissue as MI or normal based on membrane potential
+    std::vector<std::vector<bool>> classifyTissue() const {
+        const auto& membraneData = model->getU();
+        std::vector<std::vector<bool>> predictions;
+        
+        predictions.resize(membraneData.size());
+        for (size_t y = 0; y < membraneData.size(); y++) {
+            predictions[y].resize(membraneData[y].size());
+            for (size_t x = 0; x < membraneData[y].size(); x++) {
+                // Classification threshold: MI if potential < -60mV (depolarized)
+                bool isMI = membraneData[y][x] < -60.0;
+                predictions[y][x] = isMI;
+            }
+        }
+        
+        return predictions;
+    }
+    
+    // Calculate comprehensive classification metrics
+    ClassificationMetrics calculateClassificationMetrics() const {
+        auto groundTruth = generateGroundTruth();
+        auto predictions = classifyTissue();
+        
+        ClassificationMetrics metrics = {0};
+        
+        int tp = 0, fp = 0, tn = 0, fn = 0;
+        
+        for (size_t y = 0; y < groundTruth.size(); y++) {
+            for (size_t x = 0; x < groundTruth[y].size(); x++) {
+                bool actual = groundTruth[y][x];
+                bool predicted = predictions[y][x];
+                
+                if (actual && predicted) tp++;
+                else if (!actual && predicted) fp++;
+                else if (!actual && !predicted) tn++;
+                else if (actual && !predicted) fn++;
+            }
+        }
+        
+        metrics.truePositives = tp;
+        metrics.falsePositives = fp;
+        metrics.trueNegatives = tn;
+        metrics.falseNegatives = fn;
+        
+        // Calculate metrics
+        int total = tp + fp + tn + fn;
+        metrics.accuracy = total > 0 ? (double)(tp + tn) / total : 0.0;
+        
+        metrics.precision = (tp + fp) > 0 ? (double)tp / (tp + fp) : 0.0;
+        metrics.recall = (tp + fn) > 0 ? (double)tp / (tp + fn) : 0.0;
+        metrics.sensitivity = metrics.recall;
+        metrics.specificity = (tn + fp) > 0 ? (double)tn / (tn + fp) : 0.0;
+        
+        metrics.f1Score = (metrics.precision + metrics.recall) > 0 ? 
+                         2.0 * (metrics.precision * metrics.recall) / (metrics.precision + metrics.recall) : 0.0;
+        
+        return metrics;
     }
     
     // Return membrane potential data as JavaScript array
@@ -99,6 +351,162 @@ public:
     // Load state from file
     bool loadState(const std::string& filename) {
         return model->loadState(filename);
+    }
+    
+    // Get epoch results as JavaScript array
+    emscripten::val getEpochResults() const {
+        emscripten::val result = emscripten::val::array();
+        for (const auto& epoch : epochResults) {
+            emscripten::val epochObj = emscripten::val::object();
+            epochObj.set("epoch", epoch.first);
+            epochObj.set("accuracy", epoch.second);
+            result.call<void>("push", epochObj);
+        }
+        return result;
+    }
+    
+    // Get training loss history
+    emscripten::val getTrainingLoss() const {
+        emscripten::val result = emscripten::val::array();
+        for (double loss : trainingLoss) {
+            result.call<void>("push", loss);
+        }
+        return result;
+    }
+    
+    // Get validation loss history
+    emscripten::val getValidationLoss() const {
+        emscripten::val result = emscripten::val::array();
+        for (double loss : validationLoss) {
+            result.call<void>("push", loss);
+        }
+        return result;
+    }
+    
+    // Get current epoch number
+    int getCurrentEpoch() const {
+        return currentEpoch;
+    }
+    
+    // Get training statistics
+    emscripten::val getTrainingStats() const {
+        emscripten::val stats = emscripten::val::object();
+        stats.set("currentEpoch", currentEpoch);
+        stats.set("isTraining", trainingMode);
+        
+        if (!epochResults.empty()) {
+            double totalAccuracy = 0.0;
+            double maxAccuracy = 0.0;
+            double minAccuracy = 100.0;
+            
+            for (const auto& epoch : epochResults) {
+                totalAccuracy += epoch.second;
+                maxAccuracy = std::max(maxAccuracy, epoch.second);
+                minAccuracy = std::min(minAccuracy, epoch.second);
+            }
+            
+            stats.set("averageAccuracy", totalAccuracy / epochResults.size());
+            stats.set("maxAccuracy", maxAccuracy);
+            stats.set("minAccuracy", minAccuracy);
+            stats.set("totalEpochs", static_cast<int>(epochResults.size()));
+        }
+        
+        if (!trainingLoss.empty() && !validationLoss.empty()) {
+            stats.set("finalTrainingLoss", trainingLoss.back());
+            stats.set("finalValidationLoss", validationLoss.back());
+        }
+        
+        return stats;
+    }
+    
+    // Start training mode
+    void startTraining() {
+        trainingMode = true;
+        currentEpoch = 0;
+        epochResults.clear();
+        trainingLoss.clear();
+        validationLoss.clear();
+    }
+    
+    // Stop training mode
+    void stopTraining() {
+        trainingMode = false;
+    }
+    
+    // Run multiple epochs
+    void runEpochs(int numEpochs, int stepsPerEpoch) {
+        startTraining();
+        for (int i = 0; i < numEpochs; i++) {
+            runTrainingEpoch(stepsPerEpoch);
+        }
+    }
+    
+    // Get current classification metrics
+    emscripten::val getClassificationMetrics() const {
+        if (classificationHistory.empty()) {
+            return emscripten::val::object();
+        }
+        
+        const auto& metrics = classificationHistory.back();
+        emscripten::val result = emscripten::val::object();
+        
+        result.set("accuracy", metrics.accuracy);
+        result.set("precision", metrics.precision);
+        result.set("recall", metrics.recall);
+        result.set("f1Score", metrics.f1Score);
+        result.set("specificity", metrics.specificity);
+        result.set("sensitivity", metrics.sensitivity);
+        result.set("truePositives", metrics.truePositives);
+        result.set("falsePositives", metrics.falsePositives);
+        result.set("trueNegatives", metrics.trueNegatives);
+        result.set("falseNegatives", metrics.falseNegatives);
+        
+        return result;
+    }
+    
+    // Get confusion matrix data
+    emscripten::val getConfusionMatrix() const {
+        if (classificationHistory.empty()) {
+            return emscripten::val::object();
+        }
+        
+        const auto& metrics = classificationHistory.back();
+        emscripten::val matrix = emscripten::val::array();
+        
+        // Create 2x2 confusion matrix
+        emscripten::val row1 = emscripten::val::array();
+        row1.call<void>("push", metrics.truePositives);
+        row1.call<void>("push", metrics.falsePositives);
+        matrix.call<void>("push", row1);
+        
+        emscripten::val row2 = emscripten::val::array();
+        row2.call<void>("push", metrics.falseNegatives);
+        row2.call<void>("push", metrics.trueNegatives);
+        matrix.call<void>("push", row2);
+        
+        return matrix;
+    }
+    
+    // Get classification metrics history for all epochs
+    emscripten::val getClassificationHistory() const {
+        emscripten::val result = emscripten::val::array();
+        
+        for (size_t i = 0; i < classificationHistory.size(); i++) {
+            const auto& metrics = classificationHistory[i];
+            emscripten::val epochMetrics = emscripten::val::object();
+            
+            epochMetrics.set("epoch", static_cast<int>(i));
+            epochMetrics.set("accuracy", metrics.accuracy);
+            epochMetrics.set("precision", metrics.precision);
+            epochMetrics.set("recall", metrics.recall);
+            epochMetrics.set("f1Score", metrics.f1Score);
+            epochMetrics.set("specificity", metrics.specificity);
+            epochMetrics.set("sensitivity", metrics.sensitivity);
+            
+            result.call<void>("push", epochMetrics);
+        }
+        
+        return result;
     }
 };
 
@@ -322,14 +730,26 @@ EMSCRIPTEN_BINDINGS(mi_modeling_wasm) {
         .function("setParameters", &WASMFitzHughNagumo::setParameters)
         .function("setDiffusionCoefficients", &WASMFitzHughNagumo::setDiffusionCoefficients)
         .function("addStimulus", &WASMFitzHughNagumo::addStimulus)
-        .function("run", &WASMFitzHughNagumo::run)
+        .function("run", select_overload<void(int)>(&WASMFitzHughNagumo::run))
+        .function("runWithTraining", select_overload<void(int, bool)>(&WASMFitzHughNagumo::run))
+        .function("runEpochs", &WASMFitzHughNagumo::runEpochs)
         .function("step", &WASMFitzHughNagumo::step)
         .function("getTime", &WASMFitzHughNagumo::getTime)
         .function("getMembranePotential", &WASMFitzHughNagumo::getMembranePotential)
         .function("getRecoveryVariable", &WASMFitzHughNagumo::getRecoveryVariable)
         .function("getDimensions", &WASMFitzHughNagumo::getDimensions)
         .function("saveState", &WASMFitzHughNagumo::saveState)
-        .function("loadState", &WASMFitzHughNagumo::loadState);
+        .function("loadState", &WASMFitzHughNagumo::loadState)
+        .function("getEpochResults", &WASMFitzHughNagumo::getEpochResults)
+        .function("getTrainingLoss", &WASMFitzHughNagumo::getTrainingLoss)
+        .function("getValidationLoss", &WASMFitzHughNagumo::getValidationLoss)
+        .function("getCurrentEpoch", &WASMFitzHughNagumo::getCurrentEpoch)
+        .function("getTrainingStats", &WASMFitzHughNagumo::getTrainingStats)
+        .function("startTraining", &WASMFitzHughNagumo::startTraining)
+        .function("stopTraining", &WASMFitzHughNagumo::stopTraining)
+        .function("getClassificationMetrics", &WASMFitzHughNagumo::getClassificationMetrics)
+        .function("getConfusionMatrix", &WASMFitzHughNagumo::getConfusionMatrix)
+        .function("getClassificationHistory", &WASMFitzHughNagumo::getClassificationHistory);
     
     // DTM bindings
     class_<WASMDTM>("DTM")
