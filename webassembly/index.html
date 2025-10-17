@@ -227,6 +227,64 @@
             to { opacity: 1; transform: translateY(0); }
         }
 
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 15px;
+            margin: 15px 0;
+        }
+
+        .metric-card {
+            background: linear-gradient(135deg, #ffffff, #f8f9fa);
+            border-radius: 10px;
+            padding: 15px;
+            text-align: center;
+            box-shadow: 0 3px 10px rgba(0, 0, 0, 0.1);
+            border: 1px solid #e9ecef;
+        }
+
+        .metric-label {
+            font-size: 0.85rem;
+            color: #6c757d;
+            margin-bottom: 8px;
+            font-weight: 600;
+        }
+
+        .metric-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+            margin: 0;
+        }
+
+        .detailed-metrics {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 15px;
+        }
+
+        .metric-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 0;
+            border-bottom: 1px solid #e9ecef;
+        }
+
+        .metric-row:last-child {
+            border-bottom: none;
+        }
+
+        .metric-name {
+            font-weight: 600;
+            color: #495057;
+        }
+
+        .confusion-matrix-container,
+        .metrics-evolution-container {
+            height: 300px;
+            position: relative;
+        }
+
         @media (max-width: 768px) {
             .main-container {
                 margin: 10px;
@@ -243,6 +301,15 @@
             
             .results-grid {
                 grid-template-columns: 1fr;
+            }
+            
+            .metrics-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+            
+            .confusion-matrix-container,
+            .metrics-evolution-container {
+                height: 250px;
             }
         }
     </style>
@@ -321,6 +388,16 @@
                                 </div>
                                 
                                 <div>
+                                    <label for="numEpochs" class="form-label">Number of Epochs</label>
+                                    <input type="number" class="form-control" id="numEpochs" value="10" min="1" max="100">
+                                </div>
+                                
+                                <div>
+                                    <label for="stepsPerEpoch" class="form-label">Steps per Epoch</label>
+                                    <input type="number" class="form-control" id="stepsPerEpoch" value="100" min="10" max="1000">
+                                </div>
+                                
+                                <div>
                                     <label for="stimulusX" class="form-label">Stimulus X</label>
                                     <input type="number" class="form-control" id="stimulusX" value="50" min="0" max="100">
                                 </div>
@@ -337,10 +414,16 @@
                             </div>
                             
                             <div class="mt-3">
-                                <div class="form-check">
+                                <div class="form-check mb-2">
                                     <input class="form-check-input" type="checkbox" id="includeMI" checked>
                                     <label class="form-check-label" for="includeMI">
                                         Include MI Region
+                                    </label>
+                                </div>
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" id="trainingMode">
+                                    <label class="form-check-label" for="trainingMode">
+                                        Enable Training Mode (Epoch-based)
                                     </label>
                                 </div>
                             </div>
@@ -391,8 +474,11 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     
+    <!-- Classification Metrics -->
+    <script src="classification_metrics_fixed.js?v=1"></script>
+    
     <!-- WebAssembly Module -->
-    <script src="dist/mi_modeling.js"></script>
+        <script src="dist/mi_modeling.js?v=8"></script>
     
     <script>
         // Global variables
@@ -407,11 +493,24 @@
                 // Load WebAssembly module
                 wasmModule = await MIModelingWASM();
                 
-                document.getElementById('wasmStatus').innerHTML = 
-                    '<i class="fas fa-check-circle me-2"></i>WebAssembly module loaded successfully!';
-                document.getElementById('wasmStatus').className = 'wasm-status success';
+                // Test basic functionality
+                const testModel = new wasmModule.FitzHughNagumo(10, 10, 0.01);
+                const hasBasicMethods = typeof testModel.initialize === 'function' &&
+                                       typeof testModel.run === 'function' &&
+                                       typeof testModel.getMembranePotential === 'function';
+                
+                if (hasBasicMethods) {
+                    document.getElementById('wasmStatus').innerHTML = 
+                        '<i class="fas fa-check-circle me-2"></i>WebAssembly module loaded successfully! Classification metrics will be calculated in JavaScript.';
+                    document.getElementById('wasmStatus').className = 'wasm-status success';
+                } else {
+                    document.getElementById('wasmStatus').innerHTML = 
+                        '<i class="fas fa-exclamation-triangle me-2"></i>WebAssembly loaded but basic methods missing!';
+                    document.getElementById('wasmStatus').className = 'wasm-status error';
+                }
                 
                 console.log('WebAssembly module loaded:', wasmModule);
+                console.log('Basic methods available:', hasBasicMethods);
                 
             } catch (error) {
                 document.getElementById('wasmStatus').innerHTML = 
@@ -593,10 +692,13 @@
                     height: parseInt(document.getElementById('gridHeight').value),
                     timeStep: parseFloat(document.getElementById('timeStep').value),
                     steps: parseInt(document.getElementById('simulationSteps').value),
+                    numEpochs: parseInt(document.getElementById('numEpochs').value),
+                    stepsPerEpoch: parseInt(document.getElementById('stepsPerEpoch').value),
                     stimulusX: parseInt(document.getElementById('stimulusX').value),
                     stimulusY: parseInt(document.getElementById('stimulusY').value),
                     stimulusStrength: parseFloat(document.getElementById('stimulusStrength').value),
-                    includeMI: document.getElementById('includeMI').checked
+                    includeMI: document.getElementById('includeMI').checked,
+                    trainingMode: document.getElementById('trainingMode').checked
                 };
 
                 // Process uploaded files if any
@@ -623,7 +725,70 @@
                 // Run simulation
                 await updateProcessingStep('Running C++ simulation...', 0.5);
                 const startTime = performance.now();
-                model.run(params.steps);
+                
+                let epochResults = null;
+                let trainingStats = null;
+                let trainingLoss = null;
+                let validationLoss = null;
+                let classificationMetrics = null;
+                let confusionMatrix = null;
+                let classificationHistory = null;
+                
+                if (params.trainingMode) {
+                    // Run epoch-based training
+                    await updateProcessingStep(`Running ${params.numEpochs} training epochs...`, 0.5);
+                    
+                    // Create classification metrics calculator
+                    const classifier = new ClassificationMetricsFixed();
+                    
+                    // Run simulation and collect membrane potential data for each epoch
+                    const membranePotentialHistory = [];
+                    for (let epoch = 0; epoch < params.numEpochs; epoch++) {
+                        await updateProcessingStep(`Running epoch ${epoch + 1}/${params.numEpochs}...`, 0.5 + (epoch / params.numEpochs) * 0.3);
+                        
+                        // Run simulation for this epoch
+                        model.run(params.stepsPerEpoch);
+                        
+                        // Get membrane potential data
+                        const membranePotential = model.getMembranePotential();
+                        membranePotentialHistory.push(membranePotential);
+                    }
+                    
+                    // Calculate classification metrics for each epoch
+                    const epochMetrics = classifier.generateEpochMetrics(membranePotentialHistory);
+                    
+                    // Create epoch results
+                    epochResults = epochMetrics.map(metrics => ({
+                        epoch: metrics.epoch,
+                        accuracy: metrics.accuracy.toFixed(2),
+                        precision: metrics.precision.toFixed(2),
+                        recall: metrics.recall.toFixed(2),
+                        f1Score: metrics.f1Score.toFixed(2)
+                    }));
+                    
+                    // Calculate final metrics from the last epoch
+                    const finalMetrics = classifier.analyzeMembranePotential(membranePotentialHistory[membranePotentialHistory.length - 1]);
+                    classificationMetrics = finalMetrics;
+                    confusionMatrix = finalMetrics.confusionMatrix;
+                    
+                    // Create training stats
+                    const avgAccuracy = epochMetrics.reduce((sum, m) => sum + m.accuracy, 0) / epochMetrics.length;
+                    const maxAccuracy = Math.max(...epochMetrics.map(m => m.accuracy));
+                    trainingStats = {
+                        totalEpochs: params.numEpochs,
+                        averageAccuracy: avgAccuracy.toFixed(2),
+                        bestAccuracy: maxAccuracy.toFixed(2),
+                        executionTime: ((performance.now() - startTime) / 1000).toFixed(2)
+                    };
+                    
+                    console.log('Classification Metrics:', classificationMetrics);
+                    console.log('Confusion Matrix:', confusionMatrix);
+                    console.log('Training Stats:', trainingStats);
+                } else {
+                    // Run regular simulation
+                    model.run(params.steps);
+                }
+                
                 const endTime = performance.now();
                 
                 // Get results
@@ -643,7 +808,15 @@
                     finalTime: model.getTime(),
                     membranePotential: membranePotential,
                     recoveryVariable: recoveryVariable,
-                    metrics: metrics
+                    metrics: metrics,
+                    epochResults: epochResults,
+                    trainingStats: trainingStats,
+                    trainingLoss: trainingLoss,
+                    validationLoss: validationLoss,
+                    isTrainingMode: params.trainingMode,
+                    classificationMetrics: classificationMetrics,
+                    confusionMatrix: confusionMatrix,
+                    classificationHistory: classificationHistory
                 };
 
                 await updateProcessingStep('Complete!', 1.0);
@@ -740,34 +913,231 @@
             // Generate clinical analysis
             const analysis = generateClinicalAnalysis(simulationResults);
             
-            resultsContent.innerHTML = `
-                <div class="results-grid">
-                    <div class="result-card">
-                        <i class="fas fa-clock fa-2x text-primary mb-2"></i>
-                        <h6>Execution Time</h6>
-                        <div class="result-value">${simulationResults.executionTime.toFixed(2)}<span class="result-unit">ms</span></div>
+            // Build results grid based on training mode
+            let resultsGridHTML = '';
+            
+            if (simulationResults.isTrainingMode && simulationResults.trainingStats) {
+                // Training mode results
+                const stats = simulationResults.trainingStats || {};
+                resultsGridHTML = `
+                    <div class="results-grid">
+                        <div class="result-card">
+                            <i class="fas fa-graduation-cap fa-2x text-primary mb-2"></i>
+                            <h6>Total Epochs</h6>
+                            <div class="result-value">${stats.totalEpochs || 0}<span class="result-unit">epochs</span></div>
+                        </div>
+                        <div class="result-card">
+                            <i class="fas fa-chart-line fa-2x text-success mb-2"></i>
+                            <h6>Average Accuracy</h6>
+                            <div class="result-value">${stats.averageAccuracy || 'N/A'}<span class="result-unit">%</span></div>
+                        </div>
+                        <div class="result-card">
+                            <i class="fas fa-trophy fa-2x text-warning mb-2"></i>
+                            <h6>Best Accuracy</h6>
+                            <div class="result-value">${stats.bestAccuracy || 'N/A'}<span class="result-unit">%</span></div>
+                        </div>
+                        <div class="result-card">
+                            <i class="fas fa-clock fa-2x text-info mb-2"></i>
+                            <h6>Execution Time</h6>
+                            <div class="result-value">${simulationResults.executionTime ? simulationResults.executionTime.toFixed(2) : 'N/A'}<span class="result-unit">ms</span></div>
+                        </div>
                     </div>
-                    <div class="result-card">
-                        <i class="fas fa-stopwatch fa-2x text-success mb-2"></i>
-                        <h6>Final Time</h6>
-                        <div class="result-value">${simulationResults.finalTime.toFixed(3)}<span class="result-unit">s</span></div>
+                `;
+            } else {
+                // Regular simulation results
+                resultsGridHTML = `
+                    <div class="results-grid">
+                        <div class="result-card">
+                            <i class="fas fa-clock fa-2x text-primary mb-2"></i>
+                            <h6>Execution Time</h6>
+                            <div class="result-value">${simulationResults.executionTime.toFixed(2)}<span class="result-unit">ms</span></div>
+                        </div>
+                        <div class="result-card">
+                            <i class="fas fa-stopwatch fa-2x text-success mb-2"></i>
+                            <h6>Final Time</h6>
+                            <div class="result-value">${simulationResults.finalTime.toFixed(3)}<span class="result-unit">s</span></div>
+                        </div>
+                        <div class="result-card">
+                            <i class="fas fa-chart-line fa-2x text-warning mb-2"></i>
+                            <h6>Max Potential</h6>
+                            <div class="result-value">${simulationResults.metrics.maxMembranePotential.toFixed(2)}<span class="result-unit">mV</span></div>
+                        </div>
+                        <div class="result-card">
+                            <i class="fas fa-chart-area fa-2x text-info mb-2"></i>
+                            <h6>Min Potential</h6>
+                            <div class="result-value">${simulationResults.metrics.minMembranePotential.toFixed(2)}<span class="result-unit">mV</span></div>
+                        </div>
                     </div>
-                    <div class="result-card">
-                        <i class="fas fa-chart-line fa-2x text-warning mb-2"></i>
-                        <h6>Max Potential</h6>
-                        <div class="result-value">${simulationResults.metrics.maxMembranePotential.toFixed(2)}<span class="result-unit">mV</span></div>
+                `;
+            }
+
+            // Add classification metrics section if in training mode
+            let classificationMetricsHTML = '';
+            console.log('Display Results - Training Mode:', simulationResults.isTrainingMode);
+            console.log('Display Results - Classification Metrics:', simulationResults.classificationMetrics);
+            
+            if (simulationResults.isTrainingMode && simulationResults.classificationMetrics) {
+                const metrics = simulationResults.classificationMetrics;
+                classificationMetricsHTML = `
+                    <div class="card mt-4 border-0 shadow-sm">
+                        <div class="card-header bg-gradient text-white" style="background: linear-gradient(135deg, #28a745, #20c997);">
+                            <h5 class="mb-0"><i class="fas fa-chart-bar me-2"></i>Classification Metrics & Performance Analysis</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <h6 class="text-primary"><i class="fas fa-trophy me-2"></i>Key Performance Metrics</h6>
+                                    <div class="metrics-grid mb-3">
+                                        <div class="metric-card">
+                                            <div class="metric-label">Accuracy</div>
+                                            <div class="metric-value ${metrics.accuracy > 80 ? 'text-success' : metrics.accuracy > 60 ? 'text-warning' : 'text-danger'}">
+                                                ${metrics.accuracy.toFixed(1)}%
+                                            </div>
+                                        </div>
+                                        <div class="metric-card">
+                                            <div class="metric-label">Precision</div>
+                                            <div class="metric-value ${metrics.precision > 80 ? 'text-success' : metrics.precision > 60 ? 'text-warning' : 'text-danger'}">
+                                                ${metrics.precision.toFixed(1)}%
+                                            </div>
+                                        </div>
+                                        <div class="metric-card">
+                                            <div class="metric-label">Recall</div>
+                                            <div class="metric-value ${metrics.recall > 80 ? 'text-success' : metrics.recall > 60 ? 'text-warning' : 'text-danger'}">
+                                                ${metrics.recall.toFixed(1)}%
+                                            </div>
+                                        </div>
+                                        <div class="metric-card">
+                                            <div class="metric-label">F1 Score</div>
+                                            <div class="metric-value ${metrics.f1Score > 80 ? 'text-success' : metrics.f1Score > 60 ? 'text-warning' : 'text-danger'}">
+                                                ${metrics.f1Score.toFixed(1)}%
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <h6 class="text-primary"><i class="fas fa-microscope me-2"></i>Detailed Metrics</h6>
+                                    <div class="detailed-metrics">
+                                        <div class="metric-row">
+                                            <span class="metric-name">Specificity:</span>
+                                            <span class="metric-value ${metrics.specificity > 80 ? 'text-success' : 'text-warning'}">
+                                                ${metrics.specificity.toFixed(1)}%
+                                            </span>
+                                        </div>
+                                        <div class="metric-row">
+                                            <span class="metric-name">Sensitivity:</span>
+                                            <span class="metric-value ${metrics.sensitivity > 80 ? 'text-success' : 'text-warning'}">
+                                                ${metrics.sensitivity.toFixed(1)}%
+                                            </span>
+                                        </div>
+                                        <div class="metric-row">
+                                            <span class="metric-name">True Positives:</span>
+                                            <span class="metric-value text-info">${metrics.truePositives}</span>
+                                        </div>
+                                        <div class="metric-row">
+                                            <span class="metric-name">False Positives:</span>
+                                            <span class="metric-value text-warning">${metrics.falsePositives}</span>
+                                        </div>
+                                        <div class="metric-row">
+                                            <span class="metric-name">True Negatives:</span>
+                                            <span class="metric-value text-success">${metrics.trueNegatives}</span>
+                                        </div>
+                                        <div class="metric-row">
+                                            <span class="metric-name">False Negatives:</span>
+                                            <span class="metric-value text-danger">${metrics.falseNegatives}</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="row mt-3">
+                                <div class="col-md-6">
+                                    <h6 class="text-primary"><i class="fas fa-th me-2"></i>Confusion Matrix</h6>
+                                    <div class="confusion-matrix-container">
+                                        <canvas id="confusionMatrixChart"></canvas>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <h6 class="text-primary"><i class="fas fa-chart-line me-2"></i>Metrics Evolution</h6>
+                                    <div class="metrics-evolution-container">
+                                        <canvas id="metricsEvolutionChart"></canvas>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
-                    <div class="result-card">
-                        <i class="fas fa-chart-area fa-2x text-info mb-2"></i>
-                        <h6>Min Potential</h6>
-                        <div class="result-value">${simulationResults.metrics.minMembranePotential.toFixed(2)}<span class="result-unit">mV</span></div>
+                `;
+            }
+
+            // Add training progress section if in training mode
+            let trainingProgressHTML = '';
+            if (simulationResults.isTrainingMode && simulationResults.epochResults) {
+                trainingProgressHTML = `
+                    <div class="card mt-4 border-0 shadow-sm">
+                        <div class="card-header bg-gradient text-white" style="background: linear-gradient(135deg, #667eea, #764ba2);">
+                            <h5 class="mb-0"><i class="fas fa-chart-line me-2"></i>Training Progress & Epoch Results</h5>
+                        </div>
+                        <div class="card-body">
+                            <div class="row">
+                                <div class="col-md-6">
+                                    <h6 class="text-primary"><i class="fas fa-trophy me-2"></i>Epoch Results</h6>
+                                    <div class="table-responsive">
+                                        <table class="table table-sm table-striped">
+                                            <thead>
+                                                <tr>
+                                                    <th>Epoch</th>
+                                                    <th>Accuracy (%)</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                ${Array.from(simulationResults.epochResults).map(epoch => 
+                                                    `<tr>
+                                                        <td>${epoch.epoch}</td>
+                                                        <td class="${parseFloat(epoch.accuracy) > 80 ? 'text-success' : parseFloat(epoch.accuracy) > 60 ? 'text-warning' : 'text-danger'}">
+                                                            ${epoch.accuracy}
+                                                        </td>
+                                                    </tr>`
+                                                ).join('')}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <h6 class="text-primary"><i class="fas fa-chart-area me-2"></i>Training Statistics</h6>
+                                    <div class="training-stats">
+                                        <div class="stat-item mb-2">
+                                            <strong>Average Accuracy:</strong> 
+                                            <span class="badge bg-${parseFloat(simulationResults.trainingStats.averageAccuracy) > 80 ? 'success' : parseFloat(simulationResults.trainingStats.averageAccuracy) > 60 ? 'warning' : 'danger'}">
+                                                ${simulationResults.trainingStats.averageAccuracy ? simulationResults.trainingStats.averageAccuracy + '%' : 'N/A'}
+                                            </span>
+                                        </div>
+                                        <div class="stat-item mb-2">
+                                            <strong>Best Accuracy:</strong> 
+                                            <span class="badge bg-success">
+                                                ${simulationResults.trainingStats.bestAccuracy ? simulationResults.trainingStats.bestAccuracy + '%' : 'N/A'}
+                                            </span>
+                                        </div>
+                                        <div class="stat-item mb-2">
+                                            <strong>Execution Time:</strong> 
+                                            <span class="badge bg-info">
+                                                ${simulationResults.trainingStats.executionTime ? simulationResults.trainingStats.executionTime + 's' : 'N/A'}
+                                            </span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="chart-container mt-3">
+                                <canvas id="trainingChart"></canvas>
+                            </div>
+                        </div>
                     </div>
-                </div>
-                
+                `;
+            }
+
+            resultsContent.innerHTML = resultsGridHTML + `
                 <div class="chart-container">
                     <canvas id="resultsChart"></canvas>
                 </div>
-                
+            ` + classificationMetricsHTML + trainingProgressHTML + `
                 <!-- Clinical Analysis Section -->
                 <div class="card mt-4 border-0 shadow-sm">
                     <div class="card-header bg-gradient text-white" style="background: linear-gradient(135deg, #667eea, #764ba2);">
@@ -831,6 +1201,17 @@
             `;
 
             createVisualization();
+            
+            // Create training chart if in training mode
+            if (simulationResults.isTrainingMode && simulationResults.epochResults) {
+                createTrainingChart();
+            }
+            
+            // Create classification charts if in training mode
+            if (simulationResults.isTrainingMode && simulationResults.classificationMetrics) {
+                createConfusionMatrixChart();
+                createMetricsEvolutionChart();
+            }
         }
         
         function generateClinicalAnalysis(results) {
@@ -1044,7 +1425,7 @@ Report generated by MI Modeling Platform (WebAssembly)
             const ctx = canvas.getContext('2d');
             
             // Destroy previous chart
-            if (currentChart) {
+            if (currentChart && typeof currentChart.destroy === 'function') {
                 currentChart.destroy();
             }
             
@@ -1121,6 +1502,247 @@ Report generated by MI Modeling Platform (WebAssembly)
                         title: {
                             display: true,
                             text: 'Cardiac Electrophysiology Simulation Results (Center Row)'
+                        },
+                        legend: {
+                            display: true,
+                            position: 'top'
+                        }
+                    }
+                }
+            });
+        }
+        
+        function createTrainingChart() {
+            const canvas = document.getElementById('trainingChart');
+            if (!canvas || !simulationResults.epochResults) return;
+            
+            const ctx = canvas.getContext('2d');
+            
+            // Destroy previous chart if exists
+            if (window.trainingChart && typeof window.trainingChart.destroy === 'function') {
+                window.trainingChart.destroy();
+            }
+            
+            // Prepare data
+            const epochs = Array.from(simulationResults.epochResults).map(epoch => epoch.epoch);
+            const accuracies = Array.from(simulationResults.epochResults).map(epoch => epoch.accuracy);
+            const trainingLosses = Array.from(simulationResults.trainingLoss || []);
+            const validationLosses = Array.from(simulationResults.validationLoss || []);
+            
+            window.trainingChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: epochs,
+                    datasets: [
+                        {
+                            label: 'Accuracy (%)',
+                            data: accuracies,
+                            borderColor: '#28a745',
+                            backgroundColor: 'rgba(40, 167, 69, 0.1)',
+                            tension: 0.1,
+                            fill: true,
+                            yAxisID: 'y'
+                        },
+                        {
+                            label: 'Training Loss',
+                            data: trainingLosses,
+                            borderColor: '#007bff',
+                            backgroundColor: 'rgba(0, 123, 255, 0.1)',
+                            tension: 0.1,
+                            yAxisID: 'y1'
+                        },
+                        {
+                            label: 'Validation Loss',
+                            data: validationLosses,
+                            borderColor: '#dc3545',
+                            backgroundColor: 'rgba(220, 53, 69, 0.1)',
+                            tension: 0.1,
+                            yAxisID: 'y1'
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            type: 'linear',
+                            display: true,
+                            position: 'left',
+                            title: {
+                                display: true,
+                                text: 'Accuracy (%)'
+                            },
+                            min: 0,
+                            max: 100
+                        },
+                        y1: {
+                            type: 'linear',
+                            display: true,
+                            position: 'right',
+                            title: {
+                                display: true,
+                                text: 'Loss'
+                            },
+                            grid: {
+                                drawOnChartArea: false,
+                            },
+                        }
+                    },
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: 'Training Progress: Accuracy and Loss Over Epochs'
+                        },
+                        legend: {
+                            display: true,
+                            position: 'top'
+                        }
+                    }
+                }
+            });
+        }
+        
+        function createConfusionMatrixChart() {
+            const canvas = document.getElementById('confusionMatrixChart');
+            if (!canvas || !simulationResults.confusionMatrix) return;
+            
+            const ctx = canvas.getContext('2d');
+            
+            // Destroy previous chart if exists
+            if (window.confusionMatrixChart && typeof window.confusionMatrixChart.destroy === 'function') {
+                window.confusionMatrixChart.destroy();
+            }
+            
+            // Extract confusion matrix data
+            const matrix = Array.from(simulationResults.confusionMatrix);
+            const tp = matrix[0][0];
+            const fp = matrix[0][1];
+            const fn = matrix[1][0];
+            const tn = matrix[1][1];
+            
+            const data = [tp, fp, fn, tn];
+            const labels = ['True Positive', 'False Positive', 'False Negative', 'True Negative'];
+            const colors = ['#28a745', '#ffc107', '#dc3545', '#17a2b8'];
+            
+            window.confusionMatrixChart = new Chart(ctx, {
+                type: 'doughnut',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        data: data,
+                        backgroundColor: colors,
+                        borderWidth: 2,
+                        borderColor: '#fff'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: 'Confusion Matrix Distribution'
+                        },
+                        legend: {
+                            display: true,
+                            position: 'bottom'
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    const total = context.dataset.data.reduce((a, b) => a + b, 0);
+                                    const percentage = ((context.parsed / total) * 100).toFixed(1);
+                                    return `${context.label}: ${context.parsed} (${percentage}%)`;
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        
+        function createMetricsEvolutionChart() {
+            const canvas = document.getElementById('metricsEvolutionChart');
+            if (!canvas || !simulationResults.classificationHistory) return;
+            
+            const ctx = canvas.getContext('2d');
+            
+            // Destroy previous chart if exists
+            if (window.metricsEvolutionChart && typeof window.metricsEvolutionChart.destroy === 'function') {
+                window.metricsEvolutionChart.destroy();
+            }
+            
+            // Prepare data
+            const history = Array.from(simulationResults.classificationHistory);
+            const epochs = history.map(h => h.epoch);
+            const accuracies = history.map(h => h.accuracy * 100);
+            const precisions = history.map(h => h.precision * 100);
+            const recalls = history.map(h => h.recall * 100);
+            const f1Scores = history.map(h => h.f1Score * 100);
+            
+            window.metricsEvolutionChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: epochs,
+                    datasets: [
+                        {
+                            label: 'Accuracy (%)',
+                            data: accuracies,
+                            borderColor: '#28a745',
+                            backgroundColor: 'rgba(40, 167, 69, 0.1)',
+                            tension: 0.1,
+                            fill: false
+                        },
+                        {
+                            label: 'Precision (%)',
+                            data: precisions,
+                            borderColor: '#007bff',
+                            backgroundColor: 'rgba(0, 123, 255, 0.1)',
+                            tension: 0.1,
+                            fill: false
+                        },
+                        {
+                            label: 'Recall (%)',
+                            data: recalls,
+                            borderColor: '#ffc107',
+                            backgroundColor: 'rgba(255, 193, 7, 0.1)',
+                            tension: 0.1,
+                            fill: false
+                        },
+                        {
+                            label: 'F1 Score (%)',
+                            data: f1Scores,
+                            borderColor: '#dc3545',
+                            backgroundColor: 'rgba(220, 53, 69, 0.1)',
+                            tension: 0.1,
+                            fill: false
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            min: 0,
+                            max: 100,
+                            title: {
+                                display: true,
+                                text: 'Percentage (%)'
+                            }
+                        },
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Epoch'
+                            }
+                        }
+                    },
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: 'Classification Metrics Evolution'
                         },
                         legend: {
                             display: true,
