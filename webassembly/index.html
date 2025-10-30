@@ -478,7 +478,7 @@
     <script src="classification_metrics_fixed.js?v=1"></script>
     
     <!-- WebAssembly Module -->
-        <script src="dist/mi_modeling.js?v=8"></script>
+        <script src="dist/mi_modeling.js?v=9"></script>
     
     <script>
         // Global variables
@@ -1256,6 +1256,29 @@
             const minRecovery = Math.min(...recoveryFlat);
             const recoveryRange = maxRecovery - minRecovery;
             
+            // Calculate infarction percentage if classification metrics are available
+            let infarctPercentage = null;
+            let infarctAnalysis = '';
+            if (results.isTrainingMode && results.classificationMetrics) {
+                const cm = results.classificationMetrics;
+                const totalCM = (cm.truePositives + cm.falsePositives + cm.trueNegatives + cm.falseNegatives) || 0;
+                const predictedInfarctPct = totalCM > 0 ? (((cm.truePositives + cm.falsePositives) * 100) / totalCM) : 0;
+                const groundTruthInfarctPct = totalCM > 0 ? (((cm.truePositives + cm.falseNegatives) * 100) / totalCM) : 0;
+                
+                infarctPercentage = predictedInfarctPct;
+                
+                // Generate infarction analysis
+                if (predictedInfarctPct < 5) {
+                    infarctAnalysis = 'Minimal infarction area detected (< 5%). The tissue shows predominantly healthy myocardium with minimal pathological involvement.';
+                } else if (predictedInfarctPct < 15) {
+                    infarctAnalysis = `Small infarction area detected (${predictedInfarctPct.toFixed(1)}%). This represents a limited MI affecting a relatively small portion of the myocardial tissue.`;
+                } else if (predictedInfarctPct < 30) {
+                    infarctAnalysis = `Moderate infarction area detected (${predictedInfarctPct.toFixed(1)}%). This indicates a significant MI that may impact regional wall motion and cardiac function.`;
+                } else {
+                    infarctAnalysis = `Large infarction area detected (${predictedInfarctPct.toFixed(1)}%). This represents an extensive MI that will likely cause substantial cardiac dysfunction and reduced ejection fraction.`;
+                }
+            }
+            
             // Determine activity level
             let activityLevel = {
                 label: 'Normal Activity',
@@ -1318,6 +1341,35 @@
                 });
             }
             
+            // Add infarction findings if available
+            if (infarctPercentage !== null) {
+                if (infarctPercentage < 5) {
+                    findings.push({
+                        type: 'success',
+                        icon: 'fa-heartbeat',
+                        text: `Myocardial Infarction: Minimal area affected (${infarctPercentage.toFixed(1)}%) - predominantly healthy tissue`
+                    });
+                } else if (infarctPercentage < 15) {
+                    findings.push({
+                        type: 'info',
+                        icon: 'fa-exclamation-circle',
+                        text: `Myocardial Infarction: Small affected area (${infarctPercentage.toFixed(1)}%) - limited pathological involvement`
+                    });
+                } else if (infarctPercentage < 30) {
+                    findings.push({
+                        type: 'warning',
+                        icon: 'fa-exclamation-triangle',
+                        text: `Myocardial Infarction: Moderate area affected (${infarctPercentage.toFixed(1)}%) - significant tissue damage`
+                    });
+                } else {
+                    findings.push({
+                        type: 'danger',
+                        icon: 'fa-heart-crack',
+                        text: `Myocardial Infarction: Large affected area (${infarctPercentage.toFixed(1)}%) - extensive tissue damage`
+                    });
+                }
+            }
+            
             // Generate conclusion
             let conclusion = `The simulation successfully modeled cardiac electrophysiology over ${results.finalTime.toFixed(1)}s. `;
             
@@ -1327,6 +1379,11 @@
                 conclusion += 'The tissue shows minimal electrical activity, which may indicate suppressed conduction or quiescent state. ';
             } else {
                 conclusion += 'The tissue demonstrates normal electrical propagation patterns consistent with healthy myocardium. ';
+            }
+            
+            // Add infarction analysis to conclusion if available
+            if (infarctAnalysis) {
+                conclusion += ` ${infarctAnalysis} `;
             }
             
             conclusion += `The model parameters produced physiologically realistic results with stable numerical convergence.`;
@@ -1350,6 +1407,18 @@
                 recommendations.push('Investigate spatial heterogeneity in tissue properties to understand recovery variable distribution');
             }
             
+            // Add infarction-specific recommendations
+            if (infarctPercentage !== null) {
+                if (infarctPercentage > 15) {
+                    recommendations.push(`Consider clinical assessment for myocardial damage (${infarctPercentage.toFixed(1)}% infarct area detected)`);
+                    recommendations.push('Evaluate need for medical intervention or monitoring based on infarction extent');
+                }
+                if (infarctPercentage > 30) {
+                    recommendations.push('Significant myocardial damage detected - recommend immediate clinical consultation');
+                    recommendations.push('Consider additional imaging studies (echocardiography, cardiac MRI) for comprehensive assessment');
+                }
+            }
+            
             return {
                 potentialRange,
                 meanPotential,
@@ -1357,7 +1426,9 @@
                 activityLevel,
                 findings,
                 conclusion,
-                recommendations
+                recommendations,
+                infarctPercentage,
+                infarctAnalysis
             };
         }
         
