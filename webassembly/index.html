@@ -978,6 +978,9 @@
             
             if (simulationResults.isTrainingMode && simulationResults.classificationMetrics) {
                 const metrics = simulationResults.classificationMetrics;
+                const totalCM = (metrics.truePositives + metrics.falsePositives + metrics.trueNegatives + metrics.falseNegatives) || 0;
+                const predictedInfarctPct = totalCM > 0 ? (((metrics.truePositives + metrics.falsePositives) * 100) / totalCM).toFixed(1) : '0.0';
+                const groundTruthInfarctPct = totalCM > 0 ? (((metrics.truePositives + metrics.falseNegatives) * 100) / totalCM).toFixed(1) : '0.0';
                 classificationMetricsHTML = `
                     <div class="card mt-4 border-0 shadow-sm">
                         <div class="card-header bg-gradient text-white" style="background: linear-gradient(135deg, #28a745, #20c997);">
@@ -1012,6 +1015,18 @@
                                                 ${metrics.f1Score.toFixed(1)}%
                                             </div>
                                         </div>
+                                        <div class="metric-card">
+                                            <div class="metric-label">Infarct Area (Predicted)</div>
+                                            <div class="metric-value ${parseFloat(predictedInfarctPct) > 30 ? 'text-warning' : 'text-success'}">
+                                                ${predictedInfarctPct}%
+                                            </div>
+                                        </div>
+                                        <div class="metric-card">
+                                            <div class="metric-label">Infarct Area (Ground Truth)</div>
+                                            <div class="metric-value text-muted">
+                                                ${groundTruthInfarctPct}%
+                                            </div>
+                                        </div>
                                     </div>
                                 </div>
                                 <div class="col-md-6">
@@ -1044,6 +1059,14 @@
                                         <div class="metric-row">
                                             <span class="metric-name">False Negatives:</span>
                                             <span class="metric-value text-danger">${metrics.falseNegatives}</span>
+                                        </div>
+                                        <div class="metric-row">
+                                            <span class="metric-name">Infarct Percentage (Predicted):</span>
+                                            <span class="metric-value ${parseFloat(predictedInfarctPct) > 30 ? 'text-warning' : 'text-success'}">${predictedInfarctPct}%</span>
+                                        </div>
+                                        <div class="metric-row">
+                                            <span class="metric-name">Infarct Percentage (Ground Truth):</span>
+                                            <span class="metric-value text-muted">${groundTruthInfarctPct}%</span>
                                         </div>
                                     </div>
                                 </div>
